@@ -1,17 +1,33 @@
 const http = require('http');
-// 1. เรียกใชงาน Pool จากไลบรารี pg สําหรับจัดการการเชื่อมตอฐานขอมูล
 const { Pool } = require('pg');
-// 2. ตั้งคาการเชื่อมตอ โดยดึง URL มาจาก Environment Variable ของ Railway
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }, // Railway ต้องการ SSL
 });
+
+// ป้องกัน process crash ถ้า connection หลุดตอนไม่มี query ทำงานอยู่
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+});
+
 const port = process.env.PORT || 3000;
+
+// ฟังก์ชัน escape HTML ป้องกัน XSS
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 const server = http.createServer(async (req, res) => {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
-  // สไตล์หลักที่ใช้ร่วมกันทั้งหน้า
   const styleBlock = `
     <style>
       * { box-sizing: border-box; }
@@ -89,19 +105,17 @@ const server = http.createServer(async (req, res) => {
     </style>
   `;
 
+  let client;
   try {
-    // 3. ขอเชื่อมตอและสงคําสั่ง SQL ไปดึงขอมูลจากตาราง students
-    const client = await pool.connect();
+    client = await pool.connect();
     const result = await client.query('SELECT * FROM students');
-    client.release(); // คนืการเชื่อมตอเมื่อใชงานเสร็จ
 
-    // 4. นําขอมูลที่ได(result.rows) มาประกอบเปนตาราง HTML
     let rowsHtml = '';
     if (result.rows.length === 0) {
       rowsHtml = `<tr><td colspan="2" class="empty">ยังไม่มีข้อมูลนักศึกษา</td></tr>`;
     } else {
       result.rows.forEach(row => {
-        rowsHtml += `<tr><td>${row.student_id}</td><td>${row.student_name}</td></tr>`;
+        rowsHtml += `<tr><td>${escapeHtml(row.student_id)}</td><td>${escapeHtml(row.student_name)}</td></tr>`;
       });
     }
 
@@ -126,7 +140,6 @@ const server = http.createServer(async (req, res) => {
     `;
     res.end(html);
   } catch (err) {
-    // กรณเีชื่อมตอไมไดหรือเขียนชื่อตารางผิด
     console.error(err);
     const errorHtml = `
       <!DOCTYPE html>
@@ -139,12 +152,14 @@ const server = http.createServer(async (req, res) => {
       <body>
         <div class="container error-box">
           <h1>⚠️ เกิดข้อผิดพลาด!</h1>
-          <p>${err.message}</p>
+          <p>${escapeHtml(err.message)}</p>
         </div>
       </body>
       </html>
     `;
     res.end(errorHtml);
+  } finally {
+    if (client) client.release(); // release ทุกกรณี ไม่ว่า success หรือ error
   }
 });
 
